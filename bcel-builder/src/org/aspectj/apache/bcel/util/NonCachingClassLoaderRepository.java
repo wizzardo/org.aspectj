@@ -54,6 +54,7 @@ package org.aspectj.apache.bcel.util;
  * <http://www.apache.org/>.
  */
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.ReferenceQueue;
@@ -65,6 +66,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.aspectj.apache.bcel.classfile.ClassParser;
 import org.aspectj.apache.bcel.classfile.JavaClass;
@@ -252,17 +254,57 @@ public class NonCachingClassLoaderRepository implements Repository {
 	private JavaClass loadJavaClass(String className) throws ClassNotFoundException {
 		String classFile = className.replace('.', '/');
 		try {
-			InputStream is = loaderRef.getClassLoader().getResourceAsStream(classFile + ".class");
+            URL url = loaderRef.getClassLoader().getResource(classFile + ".class");
+            if (url == null)
+                throw new ClassNotFoundException(className + " not found.");
 
-			if (is == null) {
-				throw new ClassNotFoundException(className + " not found.");
-			}
+            JavaClassInfo info = cache.get(classFile);
+            if (info != null) {
+                if (url.getProtocol().equals("jar"))
+                    return info.javaClass;
+                if (!info.isModified())
+                    return info.javaClass;
+            }
 
-			ClassParser parser = new ClassParser(is, className);
-			return parser.parse();
-		} catch (IOException e) {
+            File file = info != null ? info.file : null;
+            if (file == null && "jar".equals(url.getProtocol())) {
+                file = new File(url.getFile().substring(5, url.getFile().indexOf('!')));
+            } else if (file == null && "file".equals(url.getProtocol())) {
+                file = new File(url.getFile().substring(5));
+            }
+
+            InputStream is = loaderRef.getClassLoader().getResourceAsStream(classFile + ".class");
+
+            if (is == null)
+                throw new ClassNotFoundException(className + " not found.");
+
+            ClassParser parser = new ClassParser(is, className);
+            JavaClass javaClass = parser.parse();
+
+            if (file != null)
+                cache.put(classFile, new JavaClassInfo(javaClass, file.lastModified(), file));
+
+            return javaClass;
+        } catch (IOException e) {
 			throw new ClassNotFoundException(e.toString());
 		}
 	}
 
+	private Map<String, JavaClassInfo> cache = new ConcurrentHashMap<String, JavaClassInfo>();
+
+    static class JavaClassInfo {
+        final JavaClass javaClass;
+        final long lastModified;
+        final File file;
+
+        public JavaClassInfo(JavaClass javaClass, long lastModified, File file) {
+            this.javaClass = javaClass;
+            this.lastModified = lastModified;
+            this.file = file;
+        }
+
+        boolean isModified() {
+            return lastModified != file.lastModified();
+        }
+    }
 }
