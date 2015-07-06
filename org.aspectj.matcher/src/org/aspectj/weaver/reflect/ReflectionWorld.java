@@ -24,6 +24,9 @@ import org.aspectj.weaver.UnresolvedType;
 import org.aspectj.weaver.WeakClassLoaderReference;
 import org.aspectj.weaver.World;
 
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * A ReflectionWorld is used solely for purposes of type resolution based on the runtime classpath (java.lang.reflect). It does not
  * support weaving operations (creation of mungers etc..).
@@ -106,13 +109,32 @@ public class ReflectionWorld extends World implements IReflectionWorld {
 		}
 	}
 
-	protected ReferenceTypeDelegate resolveDelegate(ReferenceType ty) {
-		if (mustUseOneFourDelegates) {
-			return ReflectionBasedReferenceTypeDelegateFactory.create14Delegate(ty, this, classLoaderReference.getClassLoader());
-		} else {
-			return ReflectionBasedReferenceTypeDelegateFactory.createDelegate(ty, this, classLoaderReference.getClassLoader());
-		}
-	}
+
+    private static Map<ClassLoader, Set<String>> notFound = Collections.synchronizedMap(new WeakHashMap<ClassLoader, Set<String>>());
+
+    protected ReferenceTypeDelegate resolveDelegate(ReferenceType ty) {
+        Set<String> set = notFound.get(classLoaderReference.getClassLoader());
+        if (set != null && set.contains(ty.getSignature()))
+            return null;
+
+
+        ReflectionBasedReferenceTypeDelegate delegate;
+        if (mustUseOneFourDelegates) {
+            delegate = ReflectionBasedReferenceTypeDelegateFactory.create14Delegate(ty, this, classLoaderReference.getClassLoader());
+        } else {
+            delegate = ReflectionBasedReferenceTypeDelegateFactory.createDelegate(ty, this, classLoaderReference.getClassLoader());
+        }
+
+        if (delegate == null) {
+            if (set == null) {
+                set = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+                notFound.put(classLoaderReference.getClassLoader(), set);
+            }
+
+            set.add(ty.getSignature());
+        }
+        return delegate;
+    }
 
 	public static class ReflectionWorldException extends RuntimeException {
 
